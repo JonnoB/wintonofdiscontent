@@ -7,12 +7,13 @@ output: html_document
 
 Setup packages and install packages
 ```{r}
-packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC") #, "betareg", "mi", "Amelia", "Zelig") #If amelia is used Betadist and mi can be removed
+packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC") #, "betareg", "mi", "Amelia", "Zelig", ) #If amelia is used Betadist and mi can be removed
 
 sapply(packages, library, character.only = TRUE)
 select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
-basewd <- "C:/Users/Jonno/Dropbox/MajoR"
-setwd(basewd)
+setwd("~/Dropbox/MajoR")
+#basewd <- "C:/Users/Jonno/Dropbox/MajoR"
+#setwd(basewd)
 
 load("data.Rdata")
 #data.raw<- read.csv("train.csv")
@@ -61,40 +62,124 @@ Imputation code chunk, takes the relvant variables, and first imputs the time se
 ```{r}
 timeimput <-5
 featureimput <- 5
-
+number_cols <- 119
 #removes the junk variables
-data2 <- data[25:30,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
+data2 <- data[1:200,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
 
 #reformat for time series imputations
-datatime <- data[25:30,] %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
+datatime <- data[1:200,] %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
   mutate(timeID = 1:119) %>% gather(., key = Id, value = ROI, -timeID ) 
 
 #imputation includes interaction within crossectional timeseries to try and reduce variance
-imputs3 <- datatime %>% amelia(., ts="timeID", cs = "Id", 
-                                      polytime = 2, intercs = TRUE, m= 20)
+unique(datatime$Id)
+group_size <- number_cols*10
+number_groups <- nrow(datatime)/group_size
 
-tscsPlot(imputs3, cs ="X26", var = "ROI")
+name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
+
+imputs3 <- vector("list", length(name_series)-1)
+
+#for large data sets even a high power computer suffers, to this end I have broken up the imutation into smaller chunks, the imputed chunks are then reconstructed later for continued analysis and imputation.
+set.seed(1928)
+for (n in 2:length(name_series)) {
+  ids <-(name_series[n-1]+1):(name_series[n])
+  imputs3[[n-1]] <- datatime[ids,] %>% amelia(., ts="timeID", 
+                                              cs = "Id", 
+                                      polytime = 2, intercs = TRUE, 
+                                      m= timeimput,
+                                      empri = group_size*0.05)
+
+  }
+
+
+#tscsPlot(imputs3, cs ="X26", var = "ROI")
+
+#takes the imputations from each selection of stock prices and reconstructs them into a continuous single imputation
+reconstr <- matrix(NA, nrow = nrow(data2), ncol =3) %>% data.frame
+names(reconstr) <- names(imputs3[[1]]$imputations[[1]])
+reconstrList <- replicate(timeimput, reconstr, simplify=FALSE)
+
+y = rep(NA,length(name_series)-1)
+z = rep(NA,length(name_series)-1)
+
+#Iterates through each selection of variables and each imputation
+for (i in 1:timeimput) { 
+
+    x <- matrix(NA, nrow = nrow(data2), ncol =3) %>% data.frame
+  
+    for (n in 1:(length(name_series)-1)){
+
+    rowids <- ((n-1)*group_size+1):(n*group_size)
+    x[rowids,] <- imputs3[[n]]$imputations[[i]]
+    #y[n] <-x %>% is.na %>% sum
+    #z[n-1] <- ((n-1)*group_size+1)
+    }
+  reconstrList[[i]][1:nrow(data),] <-x
+}
+
+
 #recombines the data with the feature data and the timeseries descriptive statistics
-PreFeatureImp <- vector("list", length(imputs3$imputations))
+PreFeatureImp <- vector("list", timeimput)
 
-for (i in 1:length(imputs3$imputations))  {
-    x <- imputs3$imputations[[i]] %>% spread(., key = Id, value = ROI) %>% select(-timeID)
+
+for (i in 1:timeimput)  {
+    x <- reconstrList[[i]] %>% spread(., key = Id, value = ROI) %>% select(-timeID)
     timestat <- timestats(x) 
     x <- x %>%  t %>% data.frame %>% bind_cols(data2,timestat,.)
     names(x)[31:149]<- names(data)[29:147]
     PreFeatureImp[[i]] <- x
 }
 
+
+reconstr <- matrix(NA, nrow = nrow(data2), ncol =number_cols) %>% data.frame
+names(reconstr) <- names(imputs3[[1]]$imputations[[1]])
+reconstrList <- replicate(timeimput, reconstr, simplify=FALSE)
+
+
+set.seed(1928)
+for (n in 2:length(name_series)) {
+  #identify time series that will be selected
+  ids <-(name_series[n-1]+1):(name_series[n])
+  #imput select time series m times
+  a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
+                                              cs = "Id", 
+                                      polytime = 2, intercs = TRUE, 
+                                      m= timeimput,
+                                      empri = group_size*0.05)
+  
+  #identify row numbers in final dataframe and insert the data into the rows
+  rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
+  for ( i in 1:timeimput) {
+    reconstrList[[i]][rowids,] <- a.out$imputations[[i]] %>% 
+      spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
+    }
+  }
+
+
 #Imputs the missing Features based on the Features and also time series stats
 ameliaList <- vector("list",length(PreFeatureImp))
 
 for (i in 1:length(ameliaList))  {
-  ameliaList <- PreFeatureImp[[i]] %>% select(Feature_3:gm_mean) %>% amelia(m= 5)
+  ameliaList <- PreFeatureImp[[i]] %>% select(Feature_3:gm_mean) %>% amelia(m= featureimput)
 
 }
 
+
 ```
 
+
+not usable on large data sets
+```{r}
+
+# for (i in 1:timeimput)  {
+#     x <- imputs3$imputations[[i]] %>% spread(., key = Id, value = ROI) %>% select(-timeID)
+#     timestat <- timestats(x) 
+#     x <- x %>%  t %>% data.frame %>% bind_cols(data2,timestat,.)
+#     names(x)[31:149]<- names(data)[29:147]
+#     PreFeatureImp[[i]] <- x
+# }
+
+```
 
 
 create data frame for classification
