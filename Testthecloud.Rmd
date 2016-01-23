@@ -1,0 +1,93 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+setwd("~/Dropbox/MajoR") #this is used when operating in the cloud
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary,
+                     verboseIter = TRUE,
+                     sampling = "down")
+
+set.seed(5627)
+down_inside <- train(x = data3,y = make.names(PlusOnecat),
+                     method = "treebag",
+                     nbagg = 50,
+                     metric = "ROC",
+                     trControl = ctrl)
+
+## now just change that option
+ctrl$sampling <- "up"
+
+set.seed(5627)
+up_inside <- train(x = data3,y = make.names(PlusOnecat),
+                   method = "treebag",
+                   nbagg = 50,
+                   metric = "ROC",
+                   trControl = ctrl)
+
+ctrl$sampling <- "rose"
+
+set.seed(5627)
+rose_inside <- train(x = data3,y = make.names(PlusOnecat),
+                     method = "treebag",
+                     nbagg = 50,
+                     metric = "ROC",
+                     trControl = ctrl)
+
+ctrl$sampling <- "smote"
+
+set.seed(5627)
+smote_inside <- train(x = data3,y = make.names(PlusOnecat),
+                      method = "treebag",
+                      nbagg = 50,
+                      metric = "ROC",
+                      trControl = ctrl)
+```
+
+Compare different ways of making classifiers
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary,
+                     verboseIter = TRUE,
+                     sampling = "rose")
+
+#Nieve do nothing to missing data
+
+set.seed(5627)
+modnieve <- train(x = data[,-c(2,3,5,11,21,29:211, 17)],y = make.names(PlusOnecat),
+                      method = "treebag",
+                      nbagg = 50,
+                      metric = "ROC",
+                      trControl = ctrl)
+
+#put Medians into missing data
+set.seed(5627)
+modnieve <- train(x = data3,y = make.names(PlusOnecat),
+                      method = "treebag",
+                      nbagg = 50,
+                      metric = "ROC",
+                      trControl = ctrl)
+
+
+#Use a single imputed example
+
+set.seed(5627)
+modimput <- train(x = imputs1$imputations[[1]],y = make.names(PlusOnecat),
+                      method = "treebag",
+                      nbagg = 50,
+                      metric = "ROC",
+                      trControl = ctrl)
+
+#use 5 imputed examples
+
+
+#use 80 or an odd number of imputed examples
+
+
+```
+

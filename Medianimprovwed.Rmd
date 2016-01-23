@@ -1,0 +1,146 @@
+---
+title: "Classified means"
+author: "Jonathan Bourne"
+date: "22 January 2016"
+output: html_document
+---
+
+
+Setup packages and install packages
+```{r}
+
+packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "pROC", "Amelia", "Zelig", "doParallel") 
+
+sapply(packages, install.packages)
+
+sapply(packages, library, character.only = TRUE)
+select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
+setwd("~/Dropbox/MajoR") #this is used when operating in the cloud
+load("data.Rdata")
+load("data3.Rdata")
+
+#data.raw<- read.csv("train.csv")
+#test <- read.csv("test_2.csv")
+#data <- data.raw
+
+set.seed(1928)
+trainIndex <- createDataPartition(1:40000, p = .8,
+                                  list = FALSE,
+                                  times = 1)
+
+data.raw <- data
+data <- data[trainIndex,]
+
+data3.raw <-data3
+data3 <- data3[trainIndex,]
+```
+
+
+```{r}
+PosNegcat <- rep(0, nrow(data))
+PosNegcat[data$Ret_PlusOne >0] <- 1
+PosNegcat <- make.names(PosNegcat)
+
+
+PosNegcat2 <- rep(0, nrow(data))
+PosNegcat2[data$Ret_PlusTwo >0] <- 1
+PosNegcat2 <-  make.names(PosNegcat2)
+
+```
+
+
+Predict Positive negative day +1
+```{r}
+ctrl <- trainControl(method = "cv", number = 5,
+                     verboseIter = TRUE,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+classPosNeg <- train(x = data3,y = PosNegcat[trainIndex],  
+                    method = "treebag",
+                    nbagg = 50,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+stopCluster(cl)
+
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+classPosNeg1 <- train(x = data3,y = PosNegcat[trainIndex],  
+                    method = "rf",
+                    metric = "ROC",
+                    trControl = ctrl)
+
+stopCluster(cl)
+
+predsPosNeg <- predict(classPosNeg, data3[-trainIndex,])
+confPosNeg <- confusionMatrix(predsPosNeg, PosNegcat[-trainIndex])
+
+confPosNegExtreme <- confusionMatrix(predsPosNeg[as.logical(PlusOnecatEx)], PosNegcat[as.logical(PlusOnecatEx)])
+
+medianpos <- median(data$Ret_PlusOne[PosNegcat =="X1"])
+medianneg <- median(data$Ret_PlusOne[PosNegcat !="X1"])
+
+```
+
+
+
+Predict Positive negative day +2
+```{r}
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+classPosNeg2 <- train(x = data3,y = PosNegcat2,  
+                    method = "treebag",
+                    nbagg = 50,
+                    metric = "ROC",
+                    trControl = ctrl)
+stopCluster(cl)
+
+
+predsPosNeg2 <- predict(classPosNeg2, data3)
+confPosNeg2 <- confusionMatrix(predsPosNeg2, PosNegcat2)
+
+medianpos2 <- median(data$Ret_PlusTwo[PosNegcat2 =="X1"])
+medianneg2 <- median(data$Ret_PlusTwo[PosNegcat2 != "X1"])
+
+```
+
+Predict output on test set
+```{r}
+
+load("test.Rdata")
+test_plus1 <- predict(classPosNeg, test)
+test_plus2 <- predict(classPosNeg2, test)
+
+ret_plus1 <- rep(0 , nrow(test))
+
+ret_plus1[test_plus1 =="X1"] <- medianpos
+ret_plus1[test_plus1 !="X1"] <- medianneg
+
+
+ret_plus2 <- rep(0 , nrow(test))
+
+ret_plus2[test_plus2 =="X1"] <- medianpos2
+ret_plus2[test_plus2 !="X1"] <- medianneg2
+
+
+rmeds <- apply(test[,29:147], 1, median, na.rm = TRUE)
+x <-matrix(rmeds,nrow=length(rmeds),ncol=60,byrow=FALSE) %>% data.frame 
+
+x <- cbind(x, ret_plus1, ret_plus2)
+x <- as.vector(t(x)) %>% data.frame
+
+obs = 120000
+vars = 62
+ids <- paste(rep(1:obs, each = vars), "_",rep(1:vars, obs), sep="")
+x <- cbind(ids, x)
+names(x) <- c("Id", "Predicted")
+write.csv(x, "sub_1.csv", row.names = FALSE)
+
+
+
+```
+
