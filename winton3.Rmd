@@ -12,8 +12,8 @@ packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pRO
 sapply(packages, library, character.only = TRUE)
 select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
 setwd("~/Dropbox/MajoR")
-#basewd <- "C:/Users/Jonno/Dropbox/MajoR"
-#setwd(basewd)
+# basewd <- "C:/Users/Jonno/Dropbox/MajoR/Data"
+# setwd(basewd)
 
 load("data.Rdata")
 #data.raw<- read.csv("train.csv")
@@ -26,21 +26,27 @@ load("data.Rdata")
 Time series function
 ```{r}
 
-timestats <- function(timeseries){
-  #Takes a time series without Na values and extracts Mean,median, max,min var, geomettric mean, and returns a data frame. N.B the time series doesn't actually have to be in a time series format.
+timestats <- function(data){
+  #Takes a time series stored as rows in a dataframe, without Na values and extracts Mean,median, max,min var, geomettric mean, and returns a data frame. 
 gm_mean <- function(x, na.rm=TRUE){
   exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
 } #http://stackoverflow.com/questions/2602583/geometric-mean-is-there-a-built-in
 
-x <- cbind(colMeans(timeseries),
-           sapply(timeseries, var),
-           sapply(timeseries, median),
-           sapply(timeseries, min), 
-           sapply(timeseries, max),
-           sapply(timeseries+1, gm_mean)-1
+rowVars <- function(x) {
+  rowSums((x - rowMeans(x))^2)/(dim(x)[2] - 1)
+} #http://stackoverflow.com/questions/25099825/row-wise-variance-of-a-matrix-in-r
+
+#this function has such inconsistant syntax because I am trying to take the fastes functions possible to operate on the dataset
+x <- cbind(rowMeans(data),
+           rowVars(data),
+           apply(data, 1 ,median),
+           do.call(pmin, data), 
+           do.call(pmax, data),
+           apply(data+1, 1,gm_mean)-1,
+           rowSums(data)
            ) %>% data.frame
 
-names(x) <- c("means", "vars","median","mins", "max", "gm_mean" )
+names(x) <- c("means", "vars","median","mins", "max", "gm_mean", "sums" )
 x
 }
 ```
@@ -63,79 +69,26 @@ Imputation code chunk, takes the relvant variables, and first imputs the time se
 timeimput <-5
 featureimput <- 5
 number_cols <- 119
+stockspergroup <- 100
 #removes the junk variables
-data2 <- data[1:200,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
+data2 <- data[,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
 
 #reformat for time series imputations
-datatime <- data[1:200,] %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
-  mutate(timeID = 1:119) %>% gather(., key = Id, value = ROI, -timeID ) 
+datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
+  mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
 
 #imputation includes interaction within crossectional timeseries to try and reduce variance
-unique(datatime$Id)
-group_size <- number_cols*10
+group_size <- number_cols*stockspergroup
 number_groups <- nrow(datatime)/group_size
 
 name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
 
-imputs3 <- vector("list", length(name_series)-1)
-
-#for large data sets even a high power computer suffers, to this end I have broken up the imutation into smaller chunks, the imputed chunks are then reconstructed later for continued analysis and imputation.
-set.seed(1928)
-for (n in 2:length(name_series)) {
-  ids <-(name_series[n-1]+1):(name_series[n])
-  imputs3[[n-1]] <- datatime[ids,] %>% amelia(., ts="timeID", 
-                                              cs = "Id", 
-                                      polytime = 2, intercs = TRUE, 
-                                      m= timeimput,
-                                      empri = group_size*0.05)
-
-  }
-
-
-#tscsPlot(imputs3, cs ="X26", var = "ROI")
-
-#takes the imputations from each selection of stock prices and reconstructs them into a continuous single imputation
-reconstr <- matrix(NA, nrow = nrow(data2), ncol =3) %>% data.frame
-names(reconstr) <- names(imputs3[[1]]$imputations[[1]])
-reconstrList <- replicate(timeimput, reconstr, simplify=FALSE)
-
-y = rep(NA,length(name_series)-1)
-z = rep(NA,length(name_series)-1)
-
-#Iterates through each selection of variables and each imputation
-for (i in 1:timeimput) { 
-
-    x <- matrix(NA, nrow = nrow(data2), ncol =3) %>% data.frame
-  
-    for (n in 1:(length(name_series)-1)){
-
-    rowids <- ((n-1)*group_size+1):(n*group_size)
-    x[rowids,] <- imputs3[[n]]$imputations[[i]]
-    #y[n] <-x %>% is.na %>% sum
-    #z[n-1] <- ((n-1)*group_size+1)
-    }
-  reconstrList[[i]][1:nrow(data),] <-x
-}
-
-
-#recombines the data with the feature data and the timeseries descriptive statistics
-PreFeatureImp <- vector("list", timeimput)
-
-
-for (i in 1:timeimput)  {
-    x <- reconstrList[[i]] %>% spread(., key = Id, value = ROI) %>% select(-timeID)
-    timestat <- timestats(x) 
-    x <- x %>%  t %>% data.frame %>% bind_cols(data2,timestat,.)
-    names(x)[31:149]<- names(data)[29:147]
-    PreFeatureImp[[i]] <- x
-}
-
-
+# create a list of dataframes that are used to reconstruct the imputed data
 reconstr <- matrix(NA, nrow = nrow(data2), ncol =number_cols) %>% data.frame
-names(reconstr) <- names(imputs3[[1]]$imputations[[1]])
+names(reconstr) <- names(select(data, Ret_2:Ret_120))
 reconstrList <- replicate(timeimput, reconstr, simplify=FALSE)
 
-
+#The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
 set.seed(1928)
 for (n in 2:length(name_series)) {
   #identify time series that will be selected
@@ -168,16 +121,56 @@ for (i in 1:length(ameliaList))  {
 ```
 
 
-not usable on large data sets
-```{r}
 
-# for (i in 1:timeimput)  {
-#     x <- imputs3$imputations[[i]] %>% spread(., key = Id, value = ROI) %>% select(-timeID)
-#     timestat <- timestats(x) 
-#     x <- x %>%  t %>% data.frame %>% bind_cols(data2,timestat,.)
-#     names(x)[31:149]<- names(data)[29:147]
-#     PreFeatureImp[[i]] <- x
-# }
+```{r}
+timeimput <-5
+featureimput <- 5
+number_cols <- 119
+stockspergroup <- 100
+
+imputer <-function(data,imputations =5, number_cols = 119,stockspergroup = 100  )  {
+    #reformat for time series imputations
+    datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
+      mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
+    
+    #imputation includes interaction within crossectional timeseries to try and reduce variance
+    group_size <- number_cols*stockspergroup
+    number_groups <- nrow(datatime)/group_size
+    
+    name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
+    
+    # create a list of dataframes that are used to reconstruct the imputed data
+    reconstr <- matrix(NA, nrow = nrow(data), ncol =number_cols) %>% data.frame
+    names(reconstr) <- names(select(data, Ret_2:Ret_120))
+    reconstrList <- replicate(imputations, reconstr, simplify=FALSE)
+    
+    #The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
+    set.seed(1928)
+    for (n in 2:length(name_series)) {
+      #identify time series that will be selected
+      ids <-(name_series[n-1]+1):(name_series[n])
+      #imput select time series m times
+      a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
+                                                  cs = "Id", 
+                                          polytime = 2, intercs = TRUE, 
+                                          m= imputations,
+                                          empri = group_size*0.05)
+      
+      #identify row numbers in final dataframe and insert the data into the rows
+      rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
+      for ( i in 1:imputations) {
+        reconstrList[[i]][rowids,] <- a.out$imputations[[i]] %>% 
+          spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
+      }
+    }
+    reconstrList
+}
+
+testImput <- imputer(test)
+```
+
+
+```{r}
 
 ```
 
