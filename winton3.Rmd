@@ -7,7 +7,7 @@ output: html_document
 
 Setup packages and install packages
 ```{r}
-packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC") #, "betareg", "mi", "Amelia", "Zelig", ) #If amelia is used Betadist and mi can be removed
+packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel") #, "Zelig", ) #If amelia is used Betadist and mi can be removed
 
 sapply(packages, library, character.only = TRUE)
 select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
@@ -49,17 +49,76 @@ x <- cbind(rowMeans(data),
 names(x) <- c("means", "vars","median","mins", "max", "gm_mean", "sums" )
 x
 }
+
+
+
+
 ```
+
+Imputation function
+```{r}
+stockspergroup= 20
+imputations <- 5
+
+imputer <-function(data,imputations =5, number_cols = 119,stockspergroup = 100  )  {
+    #reformat for time series imputations
+    datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
+      mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
+    
+    #imputation includes interaction within crossectional timeseries to try and reduce variance
+    group_size <- number_cols*stockspergroup
+    number_groups <- nrow(datatime)/group_size
+    
+    name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
+    
+    # create a list of dataframes that are used to reconstruct the imputed data
+    reconstr <- matrix(NA, nrow = nrow(data), ncol =(number_cols+1)) %>% data.frame
+    names(reconstr) <- c(names(select(data, Ret_2:Ret_120)),"alphaordering")
+    reconstrList <- replicate(imputations, reconstr, simplify=FALSE)
+    
+    #The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
+    set.seed(1928)
+    for (n in 2:length(name_series)) {
+      print(paste(n,"of",length(name_series)))
+      #identify time series that will be selected
+      ids <-(name_series[n-1]+1):(name_series[n])
+      #imput select time series m times
+      a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
+                                                  cs = "Id", 
+                                          polytime = 2, intercs = TRUE, 
+                                          m= imputations,
+                                          empri = group_size*0.05)
+      
+      #identify row numbers in final dataframe and insert the data into the rows
+      rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
+      for ( i in 1:imputations) {
+        tempId <-a.out$imputations[[i]] %>% 
+                  spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
+        reconstrList[[i]][rowids,1:number_cols] <- tempId
+        reconstrList[[i]]$alphaordering[rowids] <- rownames(tempId) %>% sub("X","",.) %>%
+          as.numeric
+      }
+    }
+
+    reconstrList <- lapply(reconstrList, function(n){
+      n %>% arrange(alphaordering) %>% select(-alphaordering)
+    })
+    reconstrList
+}
+
+```
+
 
 Find columns to remove
 ```{r}
-
 lowvar <-nearZeroVar(data[1:28]) #these are the same so can be removed from the datasets column 17 is constant
 
 NASdata <- sapply( data[,1:28], function(n) sum(is.na(n)))
 
 highNAS <-which(NASdata/nrow(data) >0.2) #returns index of major missing elements
 
+#removes the junk variables
+data2 <- data[,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
 ```
 
 
@@ -70,44 +129,36 @@ timeimput <-5
 featureimput <- 5
 number_cols <- 119
 stockspergroup <- 100
-#removes the junk variables
-data2 <- data[,-c(lowvar, highNAS,29:211)] %>% mutate(Id = paste("X",Id, sep=""))
 
-#reformat for time series imputations
-datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
-  mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
 
-#imputation includes interaction within crossectional timeseries to try and reduce variance
-group_size <- number_cols*stockspergroup
-number_groups <- nrow(datatime)/group_size
+#ImputedTrainTime <- imputer(data, imputations =5, number_cols ,stockspergroup )
 
-name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
+#testImput <- imputer(data = test, imputations =5, number_cols ,stockspergroup )
 
-# create a list of dataframes that are used to reconstruct the imputed data
-reconstr <- matrix(NA, nrow = nrow(data2), ncol =number_cols) %>% data.frame
-names(reconstr) <- names(select(data, Ret_2:Ret_120))
-reconstrList <- replicate(timeimput, reconstr, simplify=FALSE)
+#create a list of the imputed time series and the unimputed feature set
 
-#The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
-set.seed(1928)
-for (n in 2:length(name_series)) {
-  #identify time series that will be selected
-  ids <-(name_series[n-1]+1):(name_series[n])
-  #imput select time series m times
-  a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
-                                              cs = "Id", 
-                                      polytime = 2, intercs = TRUE, 
-                                      m= timeimput,
-                                      empri = group_size*0.05)
-  
-  #identify row numbers in final dataframe and insert the data into the rows
-  rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
-  for ( i in 1:timeimput) {
-    reconstrList[[i]][rowids,] <- a.out$imputations[[i]] %>% 
-      spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
+Imputtest <- imputer(data[101:200,], imputations =5, number_cols ,stockspergroup=20 )
+
+rowSums(Imputtest[[1]] == data[101:200,29:147], na.rm=TRUE) #this si a problem
+
+x <-data.frame(alphaordering= paste("X",1:40000, sep="")) %>% arrange(alphaordering) %>%
+  mutate(alphaordering = (sub("X","",alphaordering)))
+
+testimput <- ImputedTrainTime[[1]]
+testimput2 <- testimput %>% bind_cols(x) %>% arrange(alphaordering) %>% select(-alphaordering)
+
+rowSums(testimput2[1:5,1:5] == data[1:5,29:33], na.rm=TRUE)
+
+
+datlist <- lapply(ImputedTrainTime, function(n){
+  x <- timestats(n)
+  bind_cols(data2, x)
     }
-  }
+  )
 
+y <- data[1:10,29:147]
+y
+rowSums(ImputedTrainTime[[1]][1:5,] == data[1:5,29:147], na.rm=TRUE)
 
 #Imputs the missing Features based on the Features and also time series stats
 ameliaList <- vector("list",length(PreFeatureImp))
@@ -122,62 +173,9 @@ for (i in 1:length(ameliaList))  {
 
 
 
-```{r}
-timeimput <-5
-featureimput <- 5
-number_cols <- 119
-stockspergroup <- 100
-
-imputer <-function(data,imputations =5, number_cols = 119,stockspergroup = 100  )  {
-    #reformat for time series imputations
-    datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
-      mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
-    
-    #imputation includes interaction within crossectional timeseries to try and reduce variance
-    group_size <- number_cols*stockspergroup
-    number_groups <- nrow(datatime)/group_size
-    
-    name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
-    
-    # create a list of dataframes that are used to reconstruct the imputed data
-    reconstr <- matrix(NA, nrow = nrow(data), ncol =number_cols) %>% data.frame
-    names(reconstr) <- names(select(data, Ret_2:Ret_120))
-    reconstrList <- replicate(imputations, reconstr, simplify=FALSE)
-    
-    #The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
-    set.seed(1928)
-    for (n in 2:length(name_series)) {
-      #identify time series that will be selected
-      ids <-(name_series[n-1]+1):(name_series[n])
-      #imput select time series m times
-      a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
-                                                  cs = "Id", 
-                                          polytime = 2, intercs = TRUE, 
-                                          m= imputations,
-                                          empri = group_size*0.05)
-      
-      #identify row numbers in final dataframe and insert the data into the rows
-      rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
-      for ( i in 1:imputations) {
-        reconstrList[[i]][rowids,] <- a.out$imputations[[i]] %>% 
-          spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
-      }
-    }
-    reconstrList
-}
-
-testImput <- imputer(test)
-```
-
 
 ```{r}
 
-```
-
-
-create data frame for classification
-```{r}
-data3 <- na.roughfix(data[,-c(2,3,5,11,21,29:211, 17)])
 ```
 
 
