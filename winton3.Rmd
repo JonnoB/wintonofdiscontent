@@ -7,15 +7,16 @@ output: html_document
 
 Setup packages and install packages
 ```{r}
-packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel") #, "Zelig", ) #If amelia is used Betadist and mi can be removed
+packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel") #, "Zelig", "doMC") #If amelia is used Betadist and mi can be removed
 
 sapply(packages, library, character.only = TRUE)
 select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
-setwd("~/Dropbox/MajoR")
+setwd("~/Dropbox/MajoR/Data")
 # basewd <- "C:/Users/Jonno/Dropbox/MajoR/Data"
 # setwd(basewd)
 
 load("data.Rdata")
+load("FullImputTrain.Rdata")
 #data.raw<- read.csv("train.csv")
 #test <- read.csv("test_2.csv")
 #data <- data.raw
@@ -27,10 +28,12 @@ Time series function
 ```{r}
 
 timestats <- function(data){
-  #Takes a time series stored as rows in a dataframe, without Na values and extracts Mean,median, max,min var, geomettric mean, and returns a data frame. 
-gm_mean <- function(x, na.rm=TRUE){
-  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
-} #http://stackoverflow.com/questions/2602583/geometric-mean-is-there-a-built-in
+
+#Geometric mean has almost perfect correlation with mean and so won't add anything  
+#   #Takes a time series stored as rows in a dataframe, without Na values and extracts Mean,median, max,min var, geomettric mean, and returns a data frame. 
+# gm_mean <- function(x, na.rm=TRUE){
+#   exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+# } #http://stackoverflow.com/questions/2602583/geometric-mean-is-there-a-built-in
 
 rowVars <- function(x) {
   rowSums((x - rowMeans(x))^2)/(dim(x)[2] - 1)
@@ -41,12 +44,12 @@ x <- cbind(rowMeans(data),
            rowVars(data),
            apply(data, 1 ,median),
            do.call(pmin, data), 
-           do.call(pmax, data),
-           apply(data+1, 1,gm_mean)-1,
-           rowSums(data)
+           do.call(pmax, data)#,
+#           apply(data+1, 1,gm_mean)-1,
+#           rowSums(data) #there is almost perfect corelllation between these two and mean
            ) %>% data.frame
 
-names(x) <- c("means", "vars","median","mins", "max", "gm_mean", "sums" )
+names(x) <- c("means", "vars","median","mins", "max") #, "gm_mean", "sums" )
 x
 }
 
@@ -57,40 +60,37 @@ x
 
 Imputation function
 ```{r}
-stockspergroup= 20
-imputations <- 5
 
-imputer <-function(data,imputations =5, number_cols = 119,stockspergroup = 100  )  {
-    #reformat for time series imputations
-    datatime <- data %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
-      mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
+imputer <-function(data,imputations =5, number_cols = 119,stockspergroup = 100, ncpus = 1  )  {
+    #The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations. In addition the datatime dataframe is made in batches to avoid causing the system to crash when it is transposing the matrix.
     
-    #imputation includes interaction within crossectional timeseries to try and reduce variance
     group_size <- number_cols*stockspergroup
-    number_groups <- nrow(datatime)/group_size
-    
-    name_series <- c(0, seq(from = group_size, to = nrow(datatime), by = group_size ))
+    number_groups <- number_cols*nrow(data)/group_size
     
     # create a list of dataframes that are used to reconstruct the imputed data
     reconstr <- matrix(NA, nrow = nrow(data), ncol =(number_cols+1)) %>% data.frame
     names(reconstr) <- c(names(select(data, Ret_2:Ret_120)),"alphaordering")
     reconstrList <- replicate(imputations, reconstr, simplify=FALSE)
     
-    #The key is to extract the imputations of each group and insert them into a reconstructed table so that there isn't a build up of a massive list of Amelia objects as this causes the computer to crash. The downside is that there is a loss of information that can be used to analyse the fit of the imputations.
     set.seed(1928)
-    for (n in 2:length(name_series)) {
-      print(paste(n,"of",length(name_series)))
-      #identify time series that will be selected
-      ids <-(name_series[n-1]+1):(name_series[n])
+    for (n in 1:number_groups) {
+      print(paste(n,"of",number_groups))
+      #identify row numbers in final dataframe and insert the data into the rows
+      rowids <- (((n-1)*stockspergroup)+1):(n*stockspergroup)
+    #reformat for time series imputations
+    datatime <- data[rowids,] %>% select(Ret_2:Ret_120) %>% t %>% data.frame %>% 
+      mutate(timeID = 1:number_cols) %>% gather(., key = Id, value = ROI, -timeID ) 
+      
       #imput select time series m times
-      a.out <- datatime[ids,] %>% amelia(., ts="timeID", 
+      a.out <- datatime %>% amelia(., ts="timeID", 
                                                   cs = "Id", 
                                           polytime = 2, intercs = TRUE, 
                                           m= imputations,
-                                          empri = group_size*0.05)
+                                          empri = group_size*0.05,
+                                          parallel="snow",
+                                         ncpus = ncpus)
       
-      #identify row numbers in final dataframe and insert the data into the rows
-      rowids <- (name_series[n-1]/number_cols+1):(name_series[n]/number_cols)
+      
       for ( i in 1:imputations) {
         tempId <-a.out$imputations[[i]] %>% 
                   spread(., key = Id, value = ROI) %>% select(-timeID) %>% t
@@ -128,55 +128,247 @@ Imputation code chunk, takes the relvant variables, and first imputs the time se
 timeimput <-5
 featureimput <- 5
 number_cols <- 119
-stockspergroup <- 100
+stockspergroup <- 20
 
 
-#ImputedTrainTime <- imputer(data, imputations =5, number_cols ,stockspergroup )
+data.raw <- data
+data <- data.raw[1025:1124,]
+imputations <- 5
 
-#testImput <- imputer(data = test, imputations =5, number_cols ,stockspergroup )
-
+#should be run on a c4.xlarge which has 4 cores
 #create a list of the imputed time series and the unimputed feature set
+#ImputedTrainTime <- imputer(data, imputations =5, number_cols ,stockspergroup, ncpus = 4 )
+#testImput <- imputer(data = test, imputations =5, number_cols ,stockspergroup, ncpus = 4  )
 
-Imputtest <- imputer(data[101:200,], imputations =5, number_cols ,stockspergroup=20 )
-
-rowSums(Imputtest[[1]] == data[101:200,29:147], na.rm=TRUE) #this si a problem
-
-x <-data.frame(alphaordering= paste("X",1:40000, sep="")) %>% arrange(alphaordering) %>%
-  mutate(alphaordering = (sub("X","",alphaordering)))
-
-testimput <- ImputedTrainTime[[1]]
-testimput2 <- testimput %>% bind_cols(x) %>% arrange(alphaordering) %>% select(-alphaordering)
-
-rowSums(testimput2[1:5,1:5] == data[1:5,29:33], na.rm=TRUE)
+#Test the imputer function
+#Imputtest <- imputer(data, imputations =timeimput, number_cols ,stockspergroup=stockspergroup )
 
 
-datlist <- lapply(ImputedTrainTime, function(n){
+x <-rowSums(ImputedTrainTime[[3]] == select(data, Ret_2:Ret_120), na.rm=TRUE) #This checks to see is there are most matches, if there are lots of zeros it's a problem
+
+
+#Create the time series summary statistics and combine with the unimputed feature set
+datlist <- lapply(ImputedTrainTime,function(n){
   x <- timestats(n)
-  bind_cols(data2, x)
+  bind_cols(data2, x) # [,-c(30:31)] #does the geometric mean and sum need to be removed?
     }
   )
 
-y <- data[1:10,29:147]
-y
-rowSums(ImputedTrainTime[[1]][1:5,] == data[1:5,29:147], na.rm=TRUE)
 
-#Imputs the missing Features based on the Features and also time series stats
-ameliaList <- vector("list",length(PreFeatureImp))
+#Impute the feature set using the Intraday summary statistics
+datlist2 <- vector("list", featureimput*timeimput)
+for (n in 1:featureimput)  {
+  print(paste(n, "of",featureimput) )
+   a.out <-amelia(datlist[[n]],idvars = "Id",
+                   m = featureimput, empri = nrow(datlist[[n]]), 
+                   parallel = "snow", ncpus = detectCores())
+        for ( i in 1:5){
+          datlist2[[(n-1)*5+i]] <-   a.out$imputations[[i]]
+    }
+}
 
-for (i in 1:length(ameliaList))  {
-  ameliaList <- PreFeatureImp[[i]] %>% select(Feature_3:gm_mean) %>% amelia(m= featureimput)
+```
 
+
+basic model parameters
+```{r}
+train_control <- trainControl(method="cv", number=5)
+set.seed(1928)
+trainIndex <- createDataPartition(1:nrow(data), p=.7, list = FALSE)
+responseOneTrain <- data$Ret_PlusOne[trainIndex]
+MedTrainPos <-median(responseOneTrain[responseOneTrain >0])
+MedTrainNeg <-median(responseOneTrain[responseOneTrain <0])
+
+```
+
+base line predictive power
+```{r}
+#Calculate RMSE for 0, the RMSE is 0.0250393
+postResample(rep(0,nrow(data)), data$Ret_PlusOne)
+
+#Calculate RMSE using median, slightly better than using 0
+medval <- rep(median(responseOneTrain), length(data$Ret_PlusOne[-trainIndex]))
+postResample(medval,data$Ret_PlusOne[-trainIndex])
+
+#Calculate RMSE for predicting the sign and putting in the median value RMSE it is better than zero prediction
+signmeds<- rep(NA, length(data[-trainIndex,]))
+signmeds <-ifelse(data$Ret_PlusOne[-trainIndex] >0,MedTrainPos,MedTrainNeg)
+postResample(signmeds, data$Ret_PlusOne[-trainIndex])
+
+#at what percentage of correct classification and put in median is performanc better than guessing? aka how good does the classifier need to be?
+#this code missclassfies a percentage of the validation set and applies the training median for positive and negative. The process is repeated n times to get the average and varience
+
+responseOneTest <- data$Ret_PlusOne[-trainIndex]
+guessright <- rep(NA, length(responseOneTest))
+guessright <-ifelse(responseOneTest >0, 1, 0)
+
+n <-1
+
+set.seed(12)
+z <- sapply(seq(0.5,to = 1, by = .05), function(n){
+    x <- rep(NA, 30)
+      for (i in 1:30){
+        Indright <- sample(1:length(guessright), ceiling(n*length(guessright))  )
+        testvect <- guessright
+        testvect[-Indright] <- ifelse(testvect[-Indright] == 1, 0,1)
+        testsignmeds<- rep(NA, length(responseOneTest))
+        testsignmeds <-ifelse(testvect >0,MedTrainPos,MedTrainNeg)
+        x[i] <- postResample(testsignmeds, data$Ret_PlusOne[-trainIndex])[1]
+      }
+    x
+  }
+)
+
+# At 70% correct identification it is better to classify than use 0
+rbind(seq(0.5,to = 1, by = .05), colMeans(z))
+
+#the varience is very small
+boxplot(z)
+
+#can aggregating multiple classifiers produce this level of accuracy?
+
+```
+
+
+This chunk tunes an averaged neural networks parameters, once and appropriate area is found a list of networks will be made across the data sets and aggregated to try and get a predictive power above 70%
+```{r}
+
+nnetGrid <- expand.grid(.decay=c(0, 0.01, 0.1),
+                        .size = c(1:10), .bag = FALSE)
+
+#this model indicates that the model stabilises on a wieght decay of 0.1 and 10 units
+nnetTuneGridcat1 <- train(x = datlist2[[1]][trainIndex,-1],
+                  y = PosNegcat[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+
+#this model makes a repeats the grid search for a classification neural net using more units and a smaller decay range as the previous model was at the extreme of the grid when the model started stabilising.
+nnetGrid <- expand.grid(.decay=c(0.05, 0.1, 0.15),
+                        .size = c(9:14), .bag = FALSE)
+
+#removal of high corellation variables added in to reduce colineararity problems
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+i <- 1 # remove before putting in a loop
+set.seed(28)
+nnetTuneGridcat2 <- train(x = datlist2[[i]][trainIndex,highcor],
+                  y = PosNegcat[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+```
+
+
+Create a list of models to predict the Plus one return
+```{r}
+
+datlength <- 3# length(datlist2)
+
+RegNNlistPlusOne <- vector("list", datlength )
+
+RegNNlistPlusOneCat <- vector("list", datlength )
+
+for (n in 1:datlength){
+  print(paste("Regress", n, "of", datlength))
+    RegNNlistPlusOne[[n]] <-train(x = datlist2[[i]][trainIndex,-1],
+                              y = data$Ret_PlusOne[trainIndex],  
+                            method = "pcaNNet",
+                            trControl = train_control)
 }
 
 
+for (n in 1:datlength){
+  print(paste("catag", n, "of", datlength))
+    RegNNlistPlusOneCat[[n]] <-train(x = datlist2[[i]][trainIndex,-1],
+                              y = data$Ret_PlusOne[trainIndex],  
+                            method = "pcaNNet",
+                            trControl = train_control)
+}
+
+registerDoMC(8)
+
+RegNNlistPlusOnex <-foreach (i in 1:datlength) %dopar% {
+  #print(paste(n, "of", length(datlist2)))
+   train(x = datlist2[[i]][trainIndex,-1],y = data$Ret_PlusOne[trainIndex],  
+                        method = "pcaNNet",
+                        trControl = train_control)
+}
+
+for (i in 1:datlength){
+  #print(paste(n, "of", length(datlist2)))
+  RegNNlistPlusOneCat[[i]] <- train(x = datlist2[[i]][trainIndex,-1],y = PosNegcat[trainIndex],  
+                        method = "pcaNNet",
+                        trControl = train_control)
+}
+
+
+nnetGrid <- expand.grid(.decay=c(0.01, 0.05, 0.1),
+                        .size = c(3:13), .bag = FALSE)
+
+#prevent corellations between nets by removing highly correllated features
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+#This model uses an averaged neural net to regress return
+nnetTuneGridReg1 <- train(x = datlist2[[1]][trainIndex,-c(1, highcor)],
+                  y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+
+
+
+x2 <- train(x = datlist2[[1]][trainIndex,-1],y = PosNegcat[trainIndex],  
+                         method = "pcaNNet", 
+                         trControl = train_control)
+
+xx <- sapply(1:2, function(n){
+    predict(RegNNlistPlusOne[[n]], datlist2[[n]])
+})  
+
+
+
+#Calculates RMSE for a regression model
+postResample(predict(x, datlist2[[1]][-trainIndex,]), data$Ret_PlusOne[-trainIndex])
+
+
+#binds a list of models for comparison and aggregation
+z <- cbind(xx, rowMeans(xx))
+
+sapply(1:ncol(z), function(n) postResample(z[,n], data$Ret_PlusOne))
+
+posnegpred <- predict(nnetTune, datlist2[[1]][-trainIndex,])
+confusionMatrix(posnegpred, PosNegcat[-trainIndex])
+
+
+# Calculate RMSE for classify sign then insert positive or negative median
+signmeds2<- rep(NA, length(posnegpred))
+signmeds2[PosNegcat[-trainIndex] ==1] <- median(responseOneTrain[PosNegcat[trainIndex] ==1])
+signmeds2[PosNegcat[-trainIndex] ==1] <- median(responseOneTrain[PosNegcat[trainIndex] !=1])
+
+postResample(signmeds2, data$Ret_PlusOne[-trainIndex])
+
 ```
 
 
-
-
-```{r}
-
-```
 
 
 create plus one bounds
@@ -262,14 +454,35 @@ train_control <- trainControl(method="cv", number=10, verboseIter = TRUE)
 
 Predict Positive negative day +1
 ```{r}
-classPosNeg <- train(x = data3,y = PosNegcat,  
-                    method = "treebag",
+
+train_control <- trainControl(method="repeatedcv", 
+                              number=10, 
+                              verboseIter = TRUE,
+                              classProbs = TRUE)
+
+classPosNeg <- train(x = datlist2[[1]][,-1],y = make.names(PosNegcat),  
+                    method = "pcaNNet",
                     nbagg = 50,
                     metric = "ROC",
-                    trControl = ctrl)
+                    trControl = train_control)
+
+train_control <- trainControl(method="cv", 
+                              #number=10, 
+                              verboseIter = TRUE)
+
+
+RegNNlistPlusOne <-lapply(1:2, function(n){
+                    print(paste(n, "of", length(datlist2)))
+#                     train(x = n[,-1],y = data$Ret_PlusOne,  
+#                         method = "pcaNNet",
+#                         trControl = train_control)
+      }
+  )
+
 
 predsPosNeg <- predict(classPosNeg, data3)
 confPosNeg <- confusionMatrix(predsPosNeg, PosNegcat)
+
 
 confPosNegExtreme <- confusionMatrix(predsPosNeg[as.logical(PlusOnecatEx)], PosNegcat[as.logical(PlusOnecatEx)])
 
@@ -367,6 +580,18 @@ comparison <- sapply(models, function(n) {
 
 Dealing with time series
 ```{r}
+
+x <- data %>% select(Ret_121:Ret_180)
+
+#calculates the median of the remaining intraday rates and creates a predictive model
+timemeds <- apply(x,1, median)
+
+train_control <- trainControl(method="cv", number=10, repeats = 5, verboseIter = TRUE)
+
+mod1 <- train(y= timemeds, x = datlist2[[1]], method = "lm")
+
+mod2 <- train(y= timemeds[1:100], x = datlist2[[1]], method = "")
+
 timedat <- data %>% select(Ret_2:Ret_160)
 imputstime <- amelia(timedat[,1:5], ts = time)
 testts <- ts(testzoo)
