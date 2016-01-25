@@ -6,6 +6,10 @@ output: html_document
 ---
 
 Setup packages and install packages
+
+Current Priority: Impute the features on the test set
+The neural net lists are under construction but they won't work properly if the data in the test set isn't imputed, this needs to be done as it will probably take a long time.
+
 ```{r}
 packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel") #, "Zelig", "doMC") #If amelia is used Betadist and mi can be removed
 
@@ -21,6 +25,13 @@ load("FullImputTrain.Rdata")
 #test <- read.csv("test_2.csv")
 #data <- data.raw
 
+```
+
+MAE function allows evaluation of the models
+```{r}
+MAE <- function(data1, data2){
+      abs(data1-data2) %>% mean
+}
 ```
 
 
@@ -167,33 +178,72 @@ for (n in 1:featureimput)  {
     }
 }
 
+
+
+#Create the time series summary statistics and combine with the unimputed feature set
+testdatlist <- lapply(testImput,function(n){
+  x <- timestats(n)
+  bind_cols(data2, x) # [,-c(30:31)] #does the geometric mean and sum need to be removed?
+    }
+  )
+
+
+#Impute the feature set using the Intraday summary statistics
+testdatlist2 <- vector("list", featureimput*timeimput)
+for (n in 1:featureimput)  {
+  print(paste(n, "of",featureimput) )
+   a.out <-amelia(testdatlist[[n]],idvars = "Id",
+                   m = featureimput, empri = nrow(testdatlist[[n]]), 
+                   parallel = "snow", ncpus = detectCores())
+        for ( i in 1:5){
+          testdatlist2[[(n-1)*5+i]] <-   a.out$imputations[[i]]
+    }
+}
+
+
 ```
 
 
 basic model parameters
 ```{r}
-train_control <- trainControl(method="cv", number=5)
+
+
+maeSummary <- function (data,
+                        lev = NULL,
+                        model = NULL) {
+   out <- mean(abs(data$obs - data$pred)) 
+   names(out) <- "MAE"
+   out
+}
+
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
+
 set.seed(1928)
 trainIndex <- createDataPartition(1:nrow(data), p=.7, list = FALSE)
 responseOneTrain <- data$Ret_PlusOne[trainIndex]
 MedTrainPos <-median(responseOneTrain[responseOneTrain >0])
 MedTrainNeg <-median(responseOneTrain[responseOneTrain <0])
 
+datlength <- length(datlist2)
+
+RegNNlistPlusOne <- vector("list", datlength )
+
+
 ```
 
-base line predictive power
+base line predictive power on Plus 1
 ```{r}
-#Calculate RMSE for 0, the RMSE is 0.0250393
-postResample(rep(0,nrow(data)), data$Ret_PlusOne)
+#Calculate RMSE for 0, the RMSE is 0.01575095
+zero <- MAE(rep(0,nrow(data)), data$Ret_PlusOne)
 
-#Calculate RMSE using median, slightly better than using 0
+#Calculate RMSE using median, slightly better than using 0 result 0.01555366
 medval <- rep(median(responseOneTrain), length(data$Ret_PlusOne[-trainIndex]))
-postResample(medval,data$Ret_PlusOne[-trainIndex])
+MAE(medval,data$Ret_PlusOne[-trainIndex])
 
-#Calculate RMSE for predicting the sign and putting in the median value RMSE it is better than zero prediction
+#Calculate RMSE for predicting the sign and putting in the median value RMSE it is better than zero prediction 0.01084563
 signmeds<- rep(NA, length(data[-trainIndex,]))
 signmeds <-ifelse(data$Ret_PlusOne[-trainIndex] >0,MedTrainPos,MedTrainNeg)
-postResample(signmeds, data$Ret_PlusOne[-trainIndex])
+MAE(signmeds, data$Ret_PlusOne[-trainIndex])
 
 #at what percentage of correct classification and put in median is performanc better than guessing? aka how good does the classifier need to be?
 #this code missclassfies a percentage of the validation set and applies the training median for positive and negative. The process is repeated n times to get the average and varience
@@ -201,8 +251,6 @@ postResample(signmeds, data$Ret_PlusOne[-trainIndex])
 responseOneTest <- data$Ret_PlusOne[-trainIndex]
 guessright <- rep(NA, length(responseOneTest))
 guessright <-ifelse(responseOneTest >0, 1, 0)
-
-n <-1
 
 set.seed(12)
 z <- sapply(seq(0.5,to = 1, by = .05), function(n){
@@ -213,19 +261,49 @@ z <- sapply(seq(0.5,to = 1, by = .05), function(n){
         testvect[-Indright] <- ifelse(testvect[-Indright] == 1, 0,1)
         testsignmeds<- rep(NA, length(responseOneTest))
         testsignmeds <-ifelse(testvect >0,MedTrainPos,MedTrainNeg)
-        x[i] <- postResample(testsignmeds, data$Ret_PlusOne[-trainIndex])[1]
+        x[i] <- MAE(testsignmeds, data$Ret_PlusOne[-trainIndex])
       }
     x
   }
 )
 
-# At 70% correct identification it is better to classify than use 0
-rbind(seq(0.5,to = 1, by = .05), colMeans(z))
+# At 70% correct identification it is better to classify than use 0. The Improvement is linear
+rbind(seq(0.5,to = 1, by = .05), colMeans(z)) %>% t %>% plot
 
 #the varience is very small
 boxplot(z)
-
+abline(a =zero[1], b = 0)
 #can aggregating multiple classifiers produce this level of accuracy?
+
+```
+
+
+Base line predictive power on timeseries, unless you can predict the frequency there is almost no way to beat 0
+```{r}
+
+timegold <- data[,148:207] %>%  t %>% as.vector
+
+# error on zero prediction on the time series, it is very small 0.0006331534
+m <- matrix(0, nrow = nrow(data), ncol = 60) %>% t %>% as.vector
+MAE(m, timegold)
+
+# error on using true target timeseries average, it is baiscally the same as 0 0.0006331533
+m <- matrix(median(timegold), nrow = nrow(data), ncol = 60) %>% t %>% as.vector
+MAE(m, timegold)
+
+# error on using true target row timeseries average, it is marginally better as 0.0006290278
+rowmeds <- apply(data[,148:207],1,median) %>% rep( each = 60)
+MAE(rowmeds, timegold)
+
+
+# error on using the known target row timeseries average, it is marginally better as 0.0006290278
+rowmeds <-  sapply(ImputedTrainTime, function(n) {
+              apply(n,1,median) #%>% rep( each = 60)
+    }
+  ) %>% apply(.,1,median)
+
+MAE(rowmeds, timegold)
+
 
 ```
 
@@ -272,12 +350,85 @@ nnetTuneGridcat2 <- train(x = datlist2[[i]][trainIndex,highcor],
 ```
 
 
-Create a list of models to predict the Plus one return
+This chunk tunes a Regression Neural net, once done a list of neural nets can then be made using the setting from the tuned net. Ideally the net would be tuned on all the imputed models and then averaged, but that woud take for ever
 ```{r}
 
-datlength <- 3# length(datlist2)
+nnetGrid <- expand.grid(.decay=c(0.01, 0.05, 0.1),
+                        .size = c(6:13), .bag = FALSE)
 
-RegNNlistPlusOne <- vector("list", datlength )
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
+
+#prevent corellations between nets by removing highly correllated features
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+
+i <-1 # remove when putting in a loop
+#This model uses an averaged neural net to regress return
+nnetTuneGridReg1 <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
+                  y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  #metric = "MAE",
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+
+
+#the previous neural network returned 10 hidden layers and a decay of 0.5, hopefully by imputing across all the data sets and averaging the results I will get a better result than if I just use one!
+nnetGrid <- expand.grid(.decay=c(0.05),
+                        .size = c(10), .bag = FALSE)
+
+#prevent corellations between nets by removing highly correllated features
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+for (i in 1:datlength ) {
+#This model uses an averaged neural net to regress return
+RegNNlistPlusOne[[i]] <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
+                          y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
+                          method = "avNNet",
+                          tuneGrid = nnetGrid,
+                          trControl = train_control,
+                          preProc = c("center", "scale"),
+                          lineout = TRUE,
+                          trace =TRUE,
+                          MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                          maxit =500)
+}
+
+# create a prediction matrix
+
+predmat <- sapply(1:length(RegNNlistPlusOne), function(i){
+    predict(RegNNlistPlusOne[[i]], datlist2[[i]][-trainIndex,])
+})  
+
+predmat <- cbind(predmat, rowMeans(predmat))
+
+
+#mi.meld may be of interest here
+
+#Ideally all the individual models will have similar results but the averaged one will have significantly better results
+modelcomps <- sapply(1:ncol(predmat), function(n) {
+    postResample(predmat[,n], data$Ret_PlusOne[-trainIndex])
+  }
+)
+
+postResample(predmat[,26], data$Ret_PlusOne[-trainIndex])
+
+#Calculates RMSE for a regression model
+postResample(predict(x, datlist2[[1]][-trainIndex,]), data$Ret_PlusOne[-trainIndex])
+
+
+
+```
+
+
+
+Create a list of models to predict the Plus one return
+```{r}
 
 RegNNlistPlusOneCat <- vector("list", datlength )
 
