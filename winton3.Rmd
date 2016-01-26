@@ -211,7 +211,7 @@ basic model parameters
 maeSummary <- function (data,
                         lev = NULL,
                         model = NULL) {
-   out <- mean(abs(data$obs - data$pred)) 
+   out <- -mean(abs(data$obs - data$pred)) 
    names(out) <- "MAE"
    out
 }
@@ -296,14 +296,13 @@ rowmeds <- apply(data[,148:207],1,median) %>% rep( each = 60)
 MAE(rowmeds, timegold)
 
 
-# error on using the known target row timeseries average, it is marginally better as 0.0006290278
+# error on using the known target row timeseries average, it is worse than zero as 0.0006381682
 rowmeds <-  sapply(ImputedTrainTime, function(n) {
-              apply(n,1,median) #%>% rep( each = 60)
+              apply(n,1,median)
     }
-  ) %>% apply(.,1,median)
+  ) %>% apply(.,1,median) %>% rep( each = 60)
 
 MAE(rowmeds, timegold)
-
 
 ```
 
@@ -347,6 +346,69 @@ nnetTuneGridcat2 <- train(x = datlist2[[i]][trainIndex,highcor],
                   MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
                   maxit =500)
 
+#this model makes a repeats the grid search for a classification neural, the model was still at the extreme end of the decay range so I have increased it to see if I get any more improvements out
+nnetGrid <- expand.grid(.decay=c(0.15, .5, 1),
+                        .size = c(9:13), .bag = FALSE)
+
+#removal of high corellation variables added in to reduce colineararity problems
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+i <- 1 # remove before putting in a loop
+set.seed(28)
+nnetTuneGridcat3 <- train(x = datlist2[[i]][trainIndex,highcor],
+                  y = PosNegcat[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+nnetGrid <- expand.grid(.decay=c(1, 3, 5),
+                        .size = c(7:10), .bag = FALSE)
+
+
+#removal of high corellation variables added in to reduce colineararity problems
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+i <- 1 # remove before putting in a loop
+set.seed(28)
+nnetTuneGridcat4 <- train(x = datlist2[[i]][trainIndex,highcor],
+                  y = PosNegcat[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+
+nnetGrid <- expand.grid(.decay=c(2, 3, 4),
+                        .size = c(5:8), .bag = FALSE)
+
+
+#removal of high corellation variables added in to reduce colineararity problems
+highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
+
+i <- 1 # remove before putting in a loop
+set.seed(28)
+nnetTuneGridcat5 <- train(x = datlist2[[i]][trainIndex,highcor],
+                  y = PosNegcat[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
+
+
 ```
 
 
@@ -354,7 +416,7 @@ This chunk tunes a Regression Neural net, once done a list of neural nets can th
 ```{r}
 
 nnetGrid <- expand.grid(.decay=c(0.01, 0.05, 0.1),
-                        .size = c(6:13), .bag = FALSE)
+                        .size = c(6:10), .bag = FALSE)
 
 train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
 
@@ -365,7 +427,7 @@ highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
 i <-1 # remove when putting in a loop
 #This model uses an averaged neural net to regress return
 nnetTuneGridReg1 <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
-                  y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
+                  y = data$Ret_PlusOne[trainIndex],
                   method = "avNNet",
                   tuneGrid = nnetGrid,
                   trControl = train_control,
@@ -378,26 +440,29 @@ nnetTuneGridReg1 <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
 
 
 
-#the previous neural network returned 10 hidden layers and a decay of 0.5, hopefully by imputing across all the data sets and averaging the results I will get a better result than if I just use one!
-nnetGrid <- expand.grid(.decay=c(0.05),
-                        .size = c(10), .bag = FALSE)
+nnetGrid <- expand.grid(.decay=c(0.05, 0.1, 0.5),
+                        .size = c(2:8), .bag = FALSE)
+
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
 
 #prevent corellations between nets by removing highly correllated features
 highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
 
-for (i in 1:datlength ) {
+
+i <-1 # remove when putting in a loop
 #This model uses an averaged neural net to regress return
-RegNNlistPlusOne[[i]] <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
-                          y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
-                          method = "avNNet",
-                          tuneGrid = nnetGrid,
-                          trControl = train_control,
-                          preProc = c("center", "scale"),
-                          lineout = TRUE,
-                          trace =TRUE,
-                          MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
-                          maxit =500)
-}
+nnetTuneGridReg2 <- train(x = datlist2[[i]][trainIndex,-c(1, highcor)],
+                  y = data$Ret_PlusOne[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  #metric = "MAE",
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+
 
 # create a prediction matrix
 
@@ -419,118 +484,78 @@ modelcomps <- sapply(1:ncol(predmat), function(n) {
 postResample(predmat[,26], data$Ret_PlusOne[-trainIndex])
 
 #Calculates RMSE for a regression model
-postResample(predict(x, datlist2[[1]][-trainIndex,]), data$Ret_PlusOne[-trainIndex])
+postResample(predict(nnetTuneGridReg2, datlist2[[1]][-trainIndex,]), data$Ret_PlusOne[-trainIndex])
 
 
 
 ```
 
 
-
-Create a list of models to predict the Plus one return
+make a list of models to predict plus 1 and plus 2
 ```{r}
 
-RegNNlistPlusOneCat <- vector("list", datlength )
+
+RegNNlistPlusOne <- vector("list", datlength)
+
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
+datlength <- length(datlist2)
+nnetGrid <- expand.grid(.decay=c(0.01),
+                        .size = c(5:7), .bag = TRUE)
+
 
 for (n in 1:datlength){
   print(paste("Regress", n, "of", datlength))
-    RegNNlistPlusOne[[n]] <-train(x = datlist2[[i]][trainIndex,-1],
-                              y = data$Ret_PlusOne[trainIndex],  
-                            method = "pcaNNet",
-                            trControl = train_control)
-}
-
-
-for (n in 1:datlength){
-  print(paste("catag", n, "of", datlength))
-    RegNNlistPlusOneCat[[n]] <-train(x = datlist2[[i]][trainIndex,-1],
-                              y = data$Ret_PlusOne[trainIndex],  
-                            method = "pcaNNet",
-                            trControl = train_control)
-}
-
-registerDoMC(8)
-
-RegNNlistPlusOnex <-foreach (i in 1:datlength) %dopar% {
-  #print(paste(n, "of", length(datlist2)))
-   train(x = datlist2[[i]][trainIndex,-1],y = data$Ret_PlusOne[trainIndex],  
-                        method = "pcaNNet",
-                        trControl = train_control)
-}
-
-for (i in 1:datlength){
-  #print(paste(n, "of", length(datlist2)))
-  RegNNlistPlusOneCat[[i]] <- train(x = datlist2[[i]][trainIndex,-1],y = PosNegcat[trainIndex],  
-                        method = "pcaNNet",
-                        trControl = train_control)
-}
-
-
-nnetGrid <- expand.grid(.decay=c(0.01, 0.05, 0.1),
-                        .size = c(3:13), .bag = FALSE)
-
-#prevent corellations between nets by removing highly correllated features
-highcor <- findCorrelation(cor(datlist2[[1]][trainIndex,-1]), cutoff = 0.75) +1
-
-#This model uses an averaged neural net to regress return
-nnetTuneGridReg1 <- train(x = datlist2[[1]][trainIndex,-c(1, highcor)],
-                  y = responseOneTrain <- data$Ret_PlusOne[trainIndex],
+    RegNNlistPlusOne[[n]] <- train(x = datlist2[[n]][trainIndex,-c(1, highcor)],
+                  y = data$Ret_PlusOne[trainIndex],
                   method = "avNNet",
                   tuneGrid = nnetGrid,
                   trControl = train_control,
+                  metric = "MAE",
                   preProc = c("center", "scale"),
                   lineout = TRUE,
                   trace =TRUE,
-                  MaxNWts =  10*(ncol(datlist2[[i]][trainIndex,-1])+1) +10 +1,
+                  MaxNWts =  10*(ncol(datlist2[[n]][trainIndex,-1])+1) +10 +1,
                   maxit =500)
+}
 
 
+nnetGrid <- expand.grid(.decay=c(0.01),
+                        .size = c(5:7), .bag = TRUE)
 
+RegNNlistPlusTwo <- vector("list", datlength)
 
-x2 <- train(x = datlist2[[1]][trainIndex,-1],y = PosNegcat[trainIndex],  
-                         method = "pcaNNet", 
-                         trControl = train_control)
+for (n in 1:datlength){
+  print(paste("Regress", n, "of", datlength))
+    RegNNlistPlusTwo[[n]] <- train(x = datlist2[[n]][trainIndex,-c(1, highcor)],
+                  y = data$Ret_PlusTwo[trainIndex],
+                  method = "avNNet",
+                  tuneGrid = nnetGrid,
+                  trControl = train_control,
+                  metric = "MAE",
+                  preProc = c("center", "scale"),
+                  lineout = TRUE,
+                  trace =TRUE,
+                  MaxNWts =  10*(ncol(datlist2[[n]][trainIndex,-1])+1) +10 +1,
+                  maxit =500)
+}
 
-xx <- sapply(1:2, function(n){
-    predict(RegNNlistPlusOne[[n]], datlist2[[n]])
-})  
-
-
-
-#Calculates RMSE for a regression model
-postResample(predict(x, datlist2[[1]][-trainIndex,]), data$Ret_PlusOne[-trainIndex])
-
-
-#binds a list of models for comparison and aggregation
-z <- cbind(xx, rowMeans(xx))
-
-sapply(1:ncol(z), function(n) postResample(z[,n], data$Ret_PlusOne))
-
-posnegpred <- predict(nnetTune, datlist2[[1]][-trainIndex,])
-confusionMatrix(posnegpred, PosNegcat[-trainIndex])
-
-
-# Calculate RMSE for classify sign then insert positive or negative median
-signmeds2<- rep(NA, length(posnegpred))
-signmeds2[PosNegcat[-trainIndex] ==1] <- median(responseOneTrain[PosNegcat[trainIndex] ==1])
-signmeds2[PosNegcat[-trainIndex] ==1] <- median(responseOneTrain[PosNegcat[trainIndex] !=1])
-
-postResample(signmeds2, data$Ret_PlusOne[-trainIndex])
-
+setwd("~/Dropbox/MajoR/Data/PlusOneList")
+sapply(1:length(RegNNlistPlusOne), function(n){
+        save(RegNNlistPlusOne[[n]], file = paste("RegNNlistPlusOne",n,"Rdata"))
+        }
+)
 ```
 
 
-
-
-create plus one bounds
+create plus one and two bounds this chunk is not very useful
 ```{r}
-standarddevsPlusOne <- sd(data$Ret_PlusOne)*3
+standarddevsPlusOne <- sd(data$Ret_PlusOne)*1
 meanPlusOne <- mean(data$Ret_PlusOne)
 lowerboundone <- meanPlusOne-standarddevsPlusOne
 upperboundone <- meanPlusOne+standarddevsPlusOne
 
 PlusOnecat <- rep(0, 40000)
-PlusOnecat[data$Ret_PlusOne <lowerboundone] <- 1
+PlusOnecat[data$Ret_PlusOne <lowerboundone] <- -1
 PlusOnecat[data$Ret_PlusOne >upperboundone] <- 1
 
 
@@ -549,11 +574,6 @@ PosNegcat2 <- rep(0, 40000)
 PosNegcat2[data$Ret_PlusTwo >0] <- 1
 PosNegcat2 <- as.factor(PosNegcat2)
 
-```
-
-
-create plus Two bounds
-```{r}
 standarddevsPlusTwo <- stdev(data$Ret_PlusTwo)*3
 meanPlusTwo <- mean(data$Ret_PlusTwo)
 lowerboundTwo <- meanPlusTwo-standarddevsPlusTwo
@@ -562,26 +582,9 @@ upperboundTwo <- meanPlusTwo+standarddevsPlusTwo
 PlusTwocat <- rep(0, 40000)
 PlusTwocat[data$Ret_PlusTwo <lowerboundTwo] <- -1
 PlusTwocat[data$Ret_PlusTwo >upperboundTwo] <- 1
-```
 
-Calculate medians
-```{r}
-
-catIds <- c(-1,0,1)
-x <- matrix(NA, nrow = 2, ncol = 3)
-
-x[1,] <-sapply(1:3, function(n) {
-    data$Ret_PlusOne[PlusOnecat == catIds[n]] %>% median
-        }
-)
-
-x[2,] <-sapply(1:3, function(n) {
-data$Ret_PlusOne[PlusOnecat == catIds[n]] %>% mean   
-  }
-)
 
 ```
-
 
 Classify extreme values
 #it looks like Knn is not a good classifier rf is now working but is very slow
@@ -656,75 +659,6 @@ confPosNeg2 <- confusionMatrix(predsPosNeg2, PosNegcat2)
 
 medianpos2 <- median(data$Ret_PlusTwo[as.logical(as.numeric(as.character(PosNegcat2)))])
 medianneg2 <- median(data$Ret_PlusTwo[-as.logical(as.numeric(as.character(PosNegcat2)))])
-
-```
-
-
-
-```{r}
-imputs1 <- data[,-c(2,3,5,11,21,29:211, 17)] %>% amelia(., idvars = "Id", m = 80)
-
-
-train_control <- trainControl(method="cv", number=10)
-mod1 <- train(x = data3[, -c(21:22)], y = data$Ret_PlusOne, trControl = train_control, method = "rf")
-
-mod1 <- train(x = imputs1$imputations, y = data$Ret_PlusOne, trControl = train_control, method = "lm")
-
-modz <- zelig(x = imputs1, y = data$Ret_PlusOne,  model="ls" )
-
-zelig(gdp_pc ~ trade + civlib, model="ls", data=a.out)
-
-```
-
-
-Multilinear model comparison
-```{r}
-
-
-train_control <- trainControl(method="repeatedcv", number=10, repeats = 5, verboseIter = TRUE)
-
-set.seed(1928)
-mod1 <- train(x = data3, y = data$Ret_PlusOne, method = "lm")
-
-set.seed(1928)
-mod2 <- train(x = imputs1$imputations[[1]], y = data$Ret_PlusOne, method = "lm")
-
-results <- resamples(list(mod1=mod1, mod2=mod2))
-
-
-#training models on an imputed list
-mod3 <- vector("list", 5)
-
-for ( i in 1:5){
-set.seed(1928)
-mod3[[i]] <- train(x = imputs1$imputations[[i]], y = data$Ret_PlusOne, method = "lm")
-}
-
-results <- resamples(list(v1=mod3[[1]], v2=mod3[[2]],v3=mod3[[3]],v4=mod3[[4]],v5=mod3[[5]]))
-
-models <- paste("mod3[[", 1:5, "]]", sep = "")
-
-summod <- sapply(models, function(n) {
-        predict(eval(parse(text=n)))  
-}) 
-
-meanEns <- rowMeans(summod)
-
-  comparison <-   sapply(models, function(n) {
-     postResample(predict(eval(parse(text=n)), data), data$Ret_PlusOne)
-   }
- ) %>% t %>% data.frame
-
-#combines the single models and trhe full one together
-comparison <-  postResample(rowMeans(summod), data$Ret_PlusOne)%>% rbind(comparison)
-  
-# compares multiple models 
-models <- c("mod1", "mod2")
-
-comparison <- sapply(models, function(n) {
-     postResample(predict(eval(parse(text=n)), data), data$Ret_PlusOne)
-   }
- ) %>% t %>% data.frame
 
 ```
 

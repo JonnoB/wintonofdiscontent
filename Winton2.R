@@ -1,11 +1,7 @@
 
 
-for (n in 1:ncol(test)) {
-  test[is.na(test[,n]),n] <- median(test[,n], na.rm = TRUE)
-}
 
-rmeds <- apply(test[,29:147], 1, median, na.rm = TRUE)
-x <-matrix(rmeds,nrow=length(rmeds),ncol=60,byrow=FALSE) %>% data.frame 
+x <-matrix(0, nrow = nrow(data), ncol = 60) %>% data.frame 
 
 test_plus1 <- predict(mod3, test)
 test_plus2 <- predict(mod4, test)
