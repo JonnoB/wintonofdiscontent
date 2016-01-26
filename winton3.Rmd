@@ -11,7 +11,9 @@ Current Priority: Impute the features on the test set
 The neural net lists are under construction but they won't work properly if the data in the test set isn't imputed, this needs to be done as it will probably take a long time.
 
 ```{r}
-packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel") #, "Zelig", "doMC") #If amelia is used Betadist and mi can be removed
+packages <- c("randomForest","dplyr", "ggplot2", "caret", "Amelia", "tidyr","pROC", "parallel", "e1071","adabag", "ipred") #, "Zelig", "doMC") #If amelia is used Betadist and mi can be removed
+
+sapply(packages, install.packages)
 
 sapply(packages, library, character.only = TRUE)
 select <- dplyr::select #Clash between dplyr and MASS which is loaded by Caret
@@ -547,6 +549,22 @@ sapply(1:length(RegNNlistPlusOne), function(n){
 ```
 
 
+test bagging
+```{r}
+    
+
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
+trbag  <- train(x = datlist2[[1]][trainIndex,-1],
+                         y = data$Ret_PlusOne[trainIndex],  
+                              method = "treebag",
+                              nbagg = 50,
+                          metric = "MAE"  ,  
+                          trControl = train_control)
+x <- predict(trbag, data[-trainIndex,])
+
+```
+
+
 create plus one and two bounds this chunk is not very useful
 ```{r}
 standarddevsPlusOne <- sd(data$Ret_PlusOne)*1
@@ -586,63 +604,78 @@ PlusTwocat[data$Ret_PlusTwo >upperboundTwo] <- 1
 
 ```
 
-Classify extreme values
-#it looks like Knn is not a good classifier rf is now working but is very slow
-```{r}
-
-train_control <- trainControl(method="cv", number=5, verboseIter = TRUE)
-
-class1 <- train(x = data3,y = as.factor(PlusOnecat),  
-                preProcess = c("center", "scale"),
-                trControl = train_control, 
-                tuneLength = 10, method = 'knn' )
-
-preds <- predict(class1, data3)
-
-conf <- confusionMatrix(preds, as.factor(PlusOnecat))
-
-train_control <- trainControl(method="cv", number=10, verboseIter = TRUE)
-
-```
-
 
 Predict Positive negative day +1
 ```{r}
 
-train_control <- trainControl(method="repeatedcv", 
-                              number=10, 
+PosNegcat <- rep(0, 40000)
+PosNegcat[data$Ret_PlusOne >0] <- 1
+PosNegcat <- as.factor(PosNegcat)
+
+train_control_fac <- trainControl(method="cv", 
+                              number=5, 
                               verboseIter = TRUE,
                               classProbs = TRUE)
 
-classPosNeg <- train(x = datlist2[[1]][,-1],y = make.names(PosNegcat),  
-                    method = "pcaNNet",
-                    nbagg = 50,
-                    metric = "ROC",
-                    trControl = train_control)
 
-train_control <- trainControl(method="cv", 
-                              #number=10, 
-                              verboseIter = TRUE)
+classPosNegtrb <- train(x = datlist2[[1]][trainIndex,-1],
+                        y = make.names(PosNegcat[trainIndex]),  
+                        method = "treebag",
+                        nbagg = 50,
+                        trControl = train_control_fac)
+save(classPosNegtrb, file="classPosNegtrb.Rdata")
+
+c50Grid <- expand.grid(.trials = c(1:9, (1:10)*10),
+                       .model = c("tree", "rules"),
+                       .winnow = c(TRUE, FALSE))
+
+classPosNegC5 <- train(x = datlist2[[1]][trainIndex,-1],
+                  y = make.names(PosNegcat[trainIndex]),  
+                  method = "C5.0",
+                  tuneGrid = c50Grid,
+                  trControl = train_control_fac,
+                  preProc = c("center", "scale"))  
+save(classPosNegC5, file="classPosNegC5.Rdata")
 
 
-RegNNlistPlusOne <-lapply(1:2, function(n){
-                    print(paste(n, "of", length(datlist2)))
-#                     train(x = n[,-1],y = data$Ret_PlusOne,  
-#                         method = "pcaNNet",
-#                         trControl = train_control)
-      }
+classPosNegKnn <- train(x = datlist2[[1]][trainIndex,-1],
+                  y = make.names(PosNegcat[trainIndex]),  
+                  method = "knn",
+                  trControl = train_control_fac,
+                  preProc = c("center", "scale"))  
+save(classPosNegKnn, file="classPosNegKnn.Rdata")
+
+nnetGrid <- expand.grid(.decay=c(0.01),
+                        .size = c(5:7), .bag = TRUE)
+
+classPosNegnn <- train(x = datlist2[[1]][trainIndex,-1],
+                       y = make.names(PosNegcat[trainIndex]),  
+                    method = "avNNet",
+                    tuneGrid = nnetGrid,
+                    trControl = train_control_fac,
+                    preProc = c("center", "scale"),
+                    trace =TRUE,
+                    MaxNWts =  10*(ncol(datlist2[[1]][trainIndex,-1])+1) +10 +1,
+                    maxit =500)
+save(classPosNegnn, file="classPosNegnn.Rdata")
+
+
+predsPosNeg <- predict(classPosNegC5, datlist2[[1]][-trainIndex,])
+confPosNeg <- confusionMatrix(predsPosNeg, make.names(PosNegcat[-trainIndex]))
+
+predsPosNegmat <- sapply(1:25, function(n){
+              predict(classPosNegC5, datlist2[[n]][-trainIndex,])
+          }
+      )
+
+cutoff <- sapply(1:25, function(n)
+  ifelse(rowSums(predsPosNegmat =="X1") >n,"X1","X0") 
   )
 
-
-predsPosNeg <- predict(classPosNeg, data3)
-confPosNeg <- confusionMatrix(predsPosNeg, PosNegcat)
-
-
-confPosNegExtreme <- confusionMatrix(predsPosNeg[as.logical(PlusOnecatEx)], PosNegcat[as.logical(PlusOnecatEx)])
-
-medianpos <- median(data$Ret_PlusOne[as.logical(as.numeric(as.character(PosNegcat)))])
-medianneg <- median(data$Ret_PlusOne[-as.logical(as.numeric(as.character(PosNegcat)))])
-
+AggAcc <- sapply(1:24, function(i) {
+      confusionMatrix(cutoff[,i], make.names(PosNegcat[-trainIndex]))$overall[1]
+    }
+  )
 ```
 
 
@@ -659,6 +692,28 @@ confPosNeg2 <- confusionMatrix(predsPosNeg2, PosNegcat2)
 
 medianpos2 <- median(data$Ret_PlusTwo[as.logical(as.numeric(as.character(PosNegcat2)))])
 medianneg2 <- median(data$Ret_PlusTwo[-as.logical(as.numeric(as.character(PosNegcat2)))])
+
+```
+
+
+
+
+Classify extreme values
+#it looks like Knn is not a good classifier rf is now working but is very slow
+```{r}
+
+train_control <- trainControl(method="cv", number=5, verboseIter = TRUE)
+
+class1 <- train(x = data3,y = as.factor(PlusOnecat),  
+                preProcess = c("center", "scale"),
+                trControl = train_control, 
+                tuneLength = 10, method = 'knn' )
+
+preds <- predict(class1, data3)
+
+conf <- confusionMatrix(preds, as.factor(PlusOnecat))
+
+train_control <- trainControl(method="cv", number=10, verboseIter = TRUE)
 
 ```
 
