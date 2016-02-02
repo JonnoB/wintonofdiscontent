@@ -182,6 +182,12 @@ for (n in 1:featureimput)  {
 
 
 
+##converts the list of data frames in to a single averaged dataframe
+arr <- array( unlist(datlist2) , c(40000,29,25) )
+x <- apply( arr , 1:2 , mean )
+averaged_data <- x %>% data.frame
+
+
 #Create the time series summary statistics and combine with the unimputed feature set
 testdatlist <- lapply(testImput,function(n){
   x <- timestats(n)
@@ -565,44 +571,26 @@ x <- predict(trbag, data[-trainIndex,])
 ```
 
 
-create plus one and two bounds this chunk is not very useful
+predict closing
 ```{r}
-standarddevsPlusOne <- sd(data$Ret_PlusOne)*1
-meanPlusOne <- mean(data$Ret_PlusOne)
-lowerboundone <- meanPlusOne-standarddevsPlusOne
-upperboundone <- meanPlusOne+standarddevsPlusOne
-
-PlusOnecat <- rep(0, 40000)
-PlusOnecat[data$Ret_PlusOne <lowerboundone] <- -1
-PlusOnecat[data$Ret_PlusOne >upperboundone] <- 1
+train_control <- trainControl(method="cv", number=5, summaryFunction = maeSummary)
+trbag180  <- train(x = datlist2[[1]][trainIndex,-1],
+                         y = data$Ret_180[trainIndex],  
+                              method = "treebag",
+                              metric = "MAE"  ,  
+                              trControl = train_control)
 
 
 
-PlusOnecatEx <- rep(0, 40000)
-PlusOnecatEx[data$Ret_PlusOne <lowerboundone] <- -1
-PlusOnecatEx[data$Ret_PlusOne >upperboundone] <- 1
+zero <- MAE(rep(0,nrow(data[-trainIndex,])), data$Ret_180[-trainIndex])
+ret180 <- predict(trbag, data[-trainIndex,])
 
+x <- MAE( , data[-trainIndex,] )
 
-PosNegcat <- rep(0, 40000)
-PosNegcat[data$Ret_PlusOne >0] <- 1
-PosNegcat <- as.factor(PosNegcat)
-
-
-PosNegcat2 <- rep(0, 40000)
-PosNegcat2[data$Ret_PlusTwo >0] <- 1
-PosNegcat2 <- as.factor(PosNegcat2)
-
-standarddevsPlusTwo <- stdev(data$Ret_PlusTwo)*3
-meanPlusTwo <- mean(data$Ret_PlusTwo)
-lowerboundTwo <- meanPlusTwo-standarddevsPlusTwo
-upperboundTwo <- meanPlusTwo+standarddevsPlusTwo
-
-PlusTwocat <- rep(0, 40000)
-PlusTwocat[data$Ret_PlusTwo <lowerboundTwo] <- -1
-PlusTwocat[data$Ret_PlusTwo >upperboundTwo] <- 1
 
 
 ```
+
 
 
 Predict Positive negative day +1

@@ -1,18 +1,23 @@
 
 
+x <- sample(0:1, 1000, replace = T) %>% data.frame
 
-x <-matrix(0, nrow = nrow(data), ncol = 60) %>% data.frame 
+classmat <- matrix(0, nrow = 1000, ncol = 3) %>% data.frame
 
-test_plus1 <- predict(mod3, test)
-test_plus2 <- predict(mod4, test)
+classmat <- sapply(1:3, function(n){
+      x<- ifelse(x[1]==1 & runif(1000) >0.2,1,0)
+      #x <- ifelse(x[1]==0 & runif(1000) >0.8,0,1)
+      x
+     }
+) %>% data.frame
 
-x <- cbind(x, test_plus1, test_plus2)
-x <- as.vector(t(x)) %>% data.frame
+confusionMatrix(classmat[,1], x)
 
-obs = 120000
-vars = 62
-ids <- paste(rep(1:obs, each = vars), "_",rep(1:vars, obs), sep="")
+cutoff <- sapply(1:3, function(n)
+  ifelse(rowSums(classmat ==1) >n,1,0) 
+)
 
-x2 <- cbind(ids, x) #%>% t %>% data.frame
-names(x2) <- c("Id", "Predicted")
-write.csv(x2, "sub_1.csv", row.names = FALSE)
+AggAcc <- sapply(1:3, function(i) {
+  confusionMatrix(cutoff[,i], x)$overall[1]
+}
+)
